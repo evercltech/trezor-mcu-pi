@@ -87,19 +87,11 @@ CFLAGS   += -include stdio.h
 LDFLAGS  += -L$(TOP_DIR)emulator
 
 ifdef PIZERO
-
-CFLAGS += $(shell pkg-config --cflags libusbgx)
-LDLIBS += $(shell pkg-config --libs libusbgx)
 CFLAGS += -DPIZERO=1
 LDFLAGS += -lbcm2835
-
-ifeq ($(TRANSPORT), PIPE)
-  CFLAGS += -DTRANSPORT_PIPE=1
 endif
 
-endif
-
-LDLIBS   += -ltrezor -lemulator
+LDLIBS   += -ltrezor -lemulator -pthread
 LIBDEPS  += $(TOP_DIR)/libtrezor.a $(TOP_DIR)emulator/libemulator.a
 
 ifeq ($(HEADLESS),1)

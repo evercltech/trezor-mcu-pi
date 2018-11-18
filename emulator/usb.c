@@ -24,349 +24,371 @@
 #include <stdlib.h>
 #include <poll.h>
 #include <sys/sysmacros.h>
-
-#include <usbg/usbg.h>
-#include <usbg/function/hid.h>
+#include <pthread.h>
 
 #include <libopencm3/usb/usbd.h>
 
+struct usb_ctrlrequest; // forward declare to avoid including ch9.h
+
+#include "usb-gadget.h"
+
 #include "emulator.h"
 
-#define MAX_INTERFACE 4
+#define MAX_ENDPOINT 8
+#define MAX_USER_CONTROL_CALLBACK 4
+#define MAX_USER_SET_CONFIG_CALLBACK    4
+#define MAX_CONFIG_DESCRIPTOR 64
 
-enum _usbd_transaction {
-	USB_TRANSACTION_IN,
-	USB_TRANSACTION_OUT
+#define USB_TRANSACTION_IN 0
+#define USB_TRANSACTION_OUT 1
+
+#define USB_ENDPOINT_ADDRESS_MASK	0x0f
+#define USB_ENDPOINT_DIR_MASK		0x80
+
+struct usbd_endpoint {
+	struct usb_gadget_endpoint *gadget_ep;
+	usbd_endpoint_callback endpoint_callback;
+	char *buf;
+	size_t len;
+	size_t max_len;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	pthread_t thread;
 };
 
-struct _usbd_driver {
-};
-
-struct _usbd_endpoint {
-	int fd;
-	usbd_endpoint_callback callback;
-};
-
-struct _report_descriptor {
-	uint8_t *data;
-	uint16_t length;
+struct user_control_callback {
+	usbd_control_callback cb;
+	uint8_t type;
+	uint8_t type_mask;
 };
 
 struct _usbd_device {
-	const struct usb_config_descriptor *config_descriptor;
-	const struct usb_device_descriptor *device_descriptor;
-	const char **strings;
-	int num_strings;
-
-	struct _usbd_endpoint ep[MAX_INTERFACE][2];
-
-	struct _report_descriptor report_descriptor[MAX_INTERFACE];
+	usb_gadget_dev_handle *gadget;
+	struct usbd_endpoint ep[MAX_ENDPOINT][2];
+	struct user_control_callback user_control_callback[MAX_USER_CONTROL_CALLBACK];
+	  usbd_set_config_callback user_callback_set_config[MAX_USER_SET_CONFIG_CALLBACK];
+	uint8_t *control_buffer;
+	uint16_t control_buffer_size;
 };
 
-const struct _usbd_driver otgfs_usb_driver = { };
+const struct _usbd_driver {} otgfs_usb_driver = {};
 
-const char *get_string(usbd_device * usbd_dev, int index) {
-	if (index < 0 || index >= usbd_dev->num_strings) {
-		fprintf(stderr, "invalid string index : %d\n", index);
-		exit(1);
+uint16_t usbd_ep_read_packet(usbd_device *usbd_dev, uint8_t addr, void *buf, uint16_t len)
+{
+	struct usbd_endpoint *ep = &usbd_dev->ep[addr & USB_ENDPOINT_ADDRESS_MASK][USB_TRANSACTION_OUT];
+
+	pthread_mutex_lock(&ep->mutex);
+	if (ep->len < len) {
+		len = ep->len;
 	}
-	return usbd_dev->strings[index];
+	memcpy(buf, ep->buf, len);
+	ep->len = 0;
+	pthread_cond_signal(&ep->cond);
+	pthread_mutex_unlock(&ep->mutex);
+	return len;
 }
 
-usbd_device *usbd_init(const usbd_driver * driver,
-		       const struct usb_device_descriptor * device_descriptor,
-		       const struct usb_config_descriptor * config_descriptor,
-		       const char **strings, int num_strings,
-		       uint8_t * control_buffer, uint16_t control_buffer_size) {
-	(void) driver;
-	(void) control_buffer;
-	(void) control_buffer_size;
-
-	struct _usbd_device *device = calloc(sizeof(struct _usbd_device), 1);
-
-	device->device_descriptor = device_descriptor;
-	device->config_descriptor = config_descriptor;
-	device->strings = strings;
-	device->num_strings = num_strings;
-
-	for (int i = 0; i < MAX_INTERFACE; i++) {
-		device->ep[i][USB_TRANSACTION_IN].fd = device->ep[i][USB_TRANSACTION_OUT].fd = -1;
-	}
-	return device;
-}
-
-uint16_t usbd_ep_read_packet(usbd_device * usbd_dev, uint8_t addr, void *buf, uint16_t len) {
-	return read(usbd_dev->ep[addr][USB_TRANSACTION_OUT].fd, buf, len);
-}
-
-void usbd_poll(usbd_device * usbd_dev) {
+void usbd_poll(usbd_device *usbd_dev)
+{
 	emulatorPoll();
 
-	for (int i = 1; i < MAX_INTERFACE; i++) {
-		int fd = usbd_dev->ep[i][USB_TRANSACTION_OUT].fd;
+	struct pollfd fds;
 
-		if (fd != -1) {
-			struct pollfd pollfd;
+	fds.fd = usb_gadget_control_fd(usbd_dev->gadget);
+	fds.events = POLLIN;
+	if (poll(&fds, 1, 1) == 1) {
+		usb_gadget_handle_control_event(usbd_dev->gadget);
+	}
 
-			pollfd.fd = fd;
-			pollfd.events = POLLIN;
+	for (int i = 1; i < MAX_ENDPOINT; i++) {
+		struct usbd_endpoint *ep = &usbd_dev->ep[i][USB_TRANSACTION_OUT];
 
-			int ret = poll(&pollfd, 1, 1);
-
-			if (ret == 1) {
-				usbd_dev->ep[i][USB_TRANSACTION_OUT].callback(usbd_dev, i);
+		if (ep->endpoint_callback) {
+			pthread_mutex_lock(&ep->mutex);
+			size_t len = ep->len;
+			pthread_mutex_unlock(&ep->mutex);
+			if (len == 0) {
+				continue;
+			} else {
+				ep->endpoint_callback(usbd_dev, i);
 				return;
 			}
 		}
 	}
 }
 
-uint16_t usbd_ep_write_packet(usbd_device * usbd_dev, uint8_t addr, const void *buf, uint16_t len) {
-	addr &= 0x7f;
-	return write(usbd_dev->ep[addr][USB_TRANSACTION_IN].fd, buf, len);
+uint16_t usbd_ep_write_packet(usbd_device *usbd_dev, uint8_t addr, const void *buf, uint16_t len)
+{
+	struct usbd_endpoint *ep = &usbd_dev->ep[addr & USB_ENDPOINT_ADDRESS_MASK][USB_TRANSACTION_IN];
+	return usb_gadget_endpoint_write(ep->gadget_ep, buf, len);
 }
 
-void usbd_ep_setup(usbd_device * usbd_dev, uint8_t addr, uint8_t type,
-		   uint16_t max_size, usbd_endpoint_callback callback) {
+void usbd_ep_setup(usbd_device *usbd_dev, uint8_t addr, uint8_t type, uint16_t max_size, usbd_endpoint_callback cb)
+{
 	(void) type;
-	(void) max_size;
 
-	enum _usbd_transaction dir = addr & 0x80 ? USB_TRANSACTION_IN : USB_TRANSACTION_OUT;
-	addr &= 0x7f;
+	int dir = addr & USB_ENDPOINT_DIR_MASK ? USB_TRANSACTION_IN : USB_TRANSACTION_OUT;
+	addr &= USB_ENDPOINT_ADDRESS_MASK;
+	struct usbd_endpoint *ep = &usbd_dev->ep[addr][dir];
 
-	if (addr >= MAX_INTERFACE) {
-		fprintf(stderr, "invalid ep address : %d\n", addr);
-		exit(1);
-	}
+	ep->max_len = max_size;
 
-	if (callback) {
-		usbd_dev->ep[addr][dir].callback = (void *) callback;
+	if (cb) {
+		ep->endpoint_callback = cb;
 	}
 }
 
-int usbd_register_control_callback(usbd_device * usbd_dev, uint8_t type,
-				   uint8_t type_mask, usbd_control_callback callback) {
-	(void) type;
-	(void) type_mask;
+int usbd_register_control_callback(usbd_device *usbd_dev, uint8_t type, uint8_t type_mask, usbd_control_callback callback)
+{
+	for (int i = 0; i < MAX_USER_CONTROL_CALLBACK; i++) {
+		struct user_control_callback *callback_entry = &usbd_dev->user_control_callback[i];
+		if (callback_entry->cb) {
+			continue;
+		}
 
-	for (int i = 0; i < usbd_dev->config_descriptor->bNumInterfaces; i++) {
-		struct usb_setup_data req = { 0 };
-		req.bmRequestType = 0x81;
-		req.bRequest = USB_REQ_GET_DESCRIPTOR;
-		req.wValue = 0x2200;
-		req.wIndex = i;
-		req.wLength = 0;
-
-		(*callback) (usbd_dev, &req,
-			     &usbd_dev->report_descriptor[i].data,
-			     &usbd_dev->report_descriptor[i].length, NULL);
+		callback_entry->type = type;
+		callback_entry->type_mask = type_mask;
+		callback_entry->cb = callback;
+		return 0;
 	}
-	return 0;
+	return -1;
 }
 
-void usbd_disconnect(usbd_device * usbd_dev, bool disconnected) {
-	(void) usbd_dev;
-	(void) disconnected;
-	//not supported
+static void *usbd_read_thread(void *data)
+{
+	struct usbd_endpoint *ep = (struct usbd_endpoint *) data;
+	char *buf = malloc(ep->max_len);
+
+	while (1) {
+		ssize_t ret = usb_gadget_endpoint_read(ep->gadget_ep, buf, ep->max_len);
+
+		if (ret < 0) {
+			perror("usb_gadget_endpoint_read");
+			break;
+		}
+
+		pthread_mutex_lock(&ep->mutex);
+		while (ep->len != 0) {
+			pthread_cond_wait(&ep->cond, &ep->mutex);
+		}
+		memcpy(ep->buf, buf, ep->max_len);
+		ep->len = ret;
+		pthread_mutex_unlock(&ep->mutex);
+	}
+
+	free(buf);
+	return NULL;
 }
 
-#if !defined(TRANSPORT_PIPE)
+static int usbd_event_dispatch(usb_gadget_dev_handle *gadget, struct usb_gadget_event *event, void *arg)
+{
+	usbd_device *usbd_dev = (usbd_device *) arg;
 
-int usbd_register_set_config_callback(usbd_device * usbd_dev, usbd_set_config_callback callback) {
-	usbg_state *usbg_state;
+	switch (event->type) {
+		case USG_EVENT_CONTROL_REQUEST:{
+				/* Call user command hook function. */
+				struct usb_setup_data *request = (struct usb_setup_data *) event->u.req;
 
-	int usbg_ret;
+				for (int i = 0; i < MAX_USER_CONTROL_CALLBACK; i++) {
+					struct user_control_callback *callback_entry = &usbd_dev->user_control_callback[i];
+					if (callback_entry->cb == NULL) {
+						break;
+					}
 
-	usbg_ret = usbg_init("/sys/kernel/config", &usbg_state);
-	if (usbg_ret != USBG_SUCCESS) {
-		fprintf(stderr, "Error on usbg init: %s : %s\n",
-			usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-		exit(1);
-	}
-	//remove the current instance if any
-	usbg_gadget *old_gadget = usbg_get_gadget(usbg_state, "trezor");
+					if ((request->bmRequestType & callback_entry->type_mask) == callback_entry->type) {
+						usbd_control_complete_callback complete;
+						uint8_t *buf = usbd_dev->control_buffer;
+						uint16_t len = usbd_dev->control_buffer_size;
+						int ret = callback_entry->cb(usbd_dev, request, &buf, &len, &complete);
+						if (ret == USBD_REQ_HANDLED) {
+							write(usb_gadget_control_fd(gadget), buf, len);
+							return ret;
+						}
+					}
+				}
 
-	if (old_gadget != NULL) {
-		usbg_ret = usbg_rm_gadget(old_gadget, USBG_RM_RECURSE);
-		if (usbg_ret != USBG_SUCCESS) {
-			fprintf(stderr, "Error removing gadget: %s : %s\n",
-				usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-			exit(1);
-		}
-	}
-
-	struct usbg_gadget_attrs g_attrs = { 0 };
-	g_attrs.bcdUSB = usbd_dev->device_descriptor->bcdUSB;
-	g_attrs.bDeviceClass = usbd_dev->device_descriptor->bDeviceClass;
-	g_attrs.bDeviceSubClass = usbd_dev->device_descriptor->bDeviceSubClass;
-	g_attrs.bDeviceProtocol = usbd_dev->device_descriptor->bDeviceProtocol;
-	g_attrs.bMaxPacketSize0 = usbd_dev->device_descriptor->bMaxPacketSize0;
-	g_attrs.idVendor = usbd_dev->device_descriptor->idVendor;
-	g_attrs.idProduct = usbd_dev->device_descriptor->idProduct;
-	g_attrs.bcdDevice = usbd_dev->device_descriptor->bcdDevice;
-
-	struct usbg_gadget_strs g_strs = { 0 };
-	g_strs.manufacturer = (char *) get_string(usbd_dev, USBG_STR_MANUFACTURER);
-	g_strs.product = (char *) get_string(usbd_dev, USBG_STR_PRODUCT);
-	g_strs.serial = (char *) get_string(usbd_dev, USBG_STR_SERIAL_NUMBER);
-
-	usbg_gadget *usbg_gadget;
-
-	usbg_ret = usbg_create_gadget(usbg_state, "trezor", &g_attrs, &g_strs, &usbg_gadget);
-	if (usbg_ret != USBG_SUCCESS) {
-		fprintf(stderr, "Error creating gadget: %s : %s\n",
-			usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-		exit(1);
-	}
-
-	struct usbg_config_attrs c_attrs;
-
-	c_attrs.bmAttributes = usbd_dev->config_descriptor->bmAttributes;
-	c_attrs.bMaxPower = usbd_dev->config_descriptor->bMaxPower;
-
-	usbg_config *usbg_config;
-
-	usbg_ret = usbg_create_config(usbg_gadget, 1, NULL, &c_attrs, NULL, &usbg_config);
-	if (usbg_ret != USBG_SUCCESS) {
-		fprintf(stderr, "Error creating config: %s : %s\n",
-			usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-		exit(1);
-	}
-
-	(*callback) (usbd_dev, usbd_dev->config_descriptor->bConfigurationValue);
-
-	usbg_function *usbg_f_hid[MAX_INTERFACE];
-
-	if (usbd_dev->config_descriptor->bNumInterfaces >= MAX_INTERFACE) {
-		fprintf(stderr, "Invalid number of interfaces\n");
-		exit(1);
-	}
-
-	for (int i = 0; i < usbd_dev->config_descriptor->bNumInterfaces; i++) {
-		struct usbg_f_hid_attrs f_attrs = { 0 };
-
-		const struct usb_interface_descriptor *intf =
-			usbd_dev->config_descriptor->interface[i].altsetting;
-
-		f_attrs.protocol = intf->bInterfaceProtocol;
-		f_attrs.report_desc.desc = (char *) usbd_dev->report_descriptor[i].data;
-		f_attrs.report_desc.len = usbd_dev->report_descriptor[i].length;
-		f_attrs.report_length = intf->endpoint[0].wMaxPacketSize;
-		f_attrs.subclass = intf->bInterfaceSubClass;
-
-		usbg_ret =
-			usbg_create_function(usbg_gadget, USBG_F_HID,
-					     get_string(usbd_dev,
-							intf->iInterface - 1),
-					     &f_attrs, &usbg_f_hid[i]);
-		if (usbg_ret != USBG_SUCCESS) {
-			fprintf(stderr, "Error creating function: %s : %s\n",
-				usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-			exit(1);
-		}
-
-		usbg_ret =
-			usbg_add_config_function(usbg_config,
-						 get_string(usbd_dev,
-							    intf->iInterface - 1), usbg_f_hid[i]);
-		if (usbg_ret != USBG_SUCCESS) {
-			fprintf(stderr, "Error adding function: %s : %s\n",
-				usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-			exit(1);
-		}
-	}
-
-	usbg_ret = usbg_enable_gadget(usbg_gadget, DEFAULT_UDC);
-	if (usbg_ret != USBG_SUCCESS) {
-		fprintf(stderr, "Error enabling gadget: %s : %s\n",
-			usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-		exit(1);
-	}
-
-	for (int i = 0; i < usbd_dev->config_descriptor->bNumInterfaces; i++) {
-		dev_t dev;
-
-		usbg_ret = usbg_f_hid_get_dev(usbg_to_hid_function(usbg_f_hid[i]), &dev);
-		if (usbg_ret != USBG_SUCCESS) {
-			fprintf(stderr, "Error getting dev: %s : %s\n",
-				usbg_error_name(usbg_ret), usbg_strerror(usbg_ret));
-			exit(1);
-		}
-		char dev_filename[20];
-
-		sprintf(dev_filename, "/dev/hidg%d", minor(dev));
-		int fd = open(dev_filename, O_RDWR | O_NONBLOCK);
-
-		if (fd == -1) {
-			fprintf(stderr, "Error opening hidg device: %s\n", dev_filename);
-			exit(1);
-		}
-		const struct usb_interface_descriptor *intf =
-			usbd_dev->config_descriptor->interface[i].altsetting;
-
-		for (int j = 0; j < intf->bNumEndpoints; j++) {
-			uint8_t addr = intf->endpoint[j].bEndpointAddress;
-
-			addr &= 0x7f;
-			usbd_dev->ep[addr][USB_TRANSACTION_IN].fd =
-				usbd_dev->ep[addr][USB_TRANSACTION_OUT].fd = fd;
-		}
-	}
-	return 0;
-}
-
-#else
-
-int usbd_register_set_config_callback(usbd_device * usbd_dev, usbd_set_config_callback callback) {
-	(*callback) (usbd_dev, usbd_dev->config_descriptor->bConfigurationValue);
-
-	if (usbd_dev->config_descriptor->bNumInterfaces >= MAX_INTERFACE) {
-		fprintf(stderr, "Invalid number of interfaces\n");
-		exit(1);
-	}
-
-	for (int i = 0; i < usbd_dev->config_descriptor->bNumInterfaces; i++) {
-		const struct usb_interface_descriptor *intf =
-			usbd_dev->config_descriptor->interface[i].altsetting;
-		char *prefix;
-
-		switch (intf->iInterface) {
-			case 4:
-				prefix = "/tmp/pipe.trezor";
-				break;
-			case 5:
-				prefix = "/tmp/pipe.trezor_debug";
-				break;
-			case 6:
-				continue;	//skip u2f interface
-			default:
-				fprintf(stderr, "unknown usb interface\n");
-				exit(1);
-		}
-
-		for (int j = 0; j < intf->bNumEndpoints; j++) {
-			uint8_t addr = intf->endpoint[j].bEndpointAddress;
-			enum _usbd_transaction dir =
-				addr & 0x80 ? USB_TRANSACTION_IN : USB_TRANSACTION_OUT;
-
-			const char *dir_name = dir == USB_TRANSACTION_IN ? ".from" : ".to";
-
-			addr &= 0x7f;
-			char filename[255] = { 0 };
-			strcpy(filename, prefix);
-			strcat(filename, dir_name);
-			mkfifo(filename, 0600);
-			int fd = open(filename, O_RDWR | O_NONBLOCK);
-
-			if (fd == -1) {
-				fprintf(stderr, "Error opening pipe device: %s\n", filename);
-				exit(1);
+				return USBD_REQ_NOTSUPP;
 			}
 
-			usbd_dev->ep[addr][dir].fd = fd;
-		}
+		case USG_EVENT_SET_CONFIG:
+			/*
+			 * Flush control callbacks. These will be reregistered
+			 * by the user handler.
+			 */
+			for (int i = 0; i < MAX_USER_CONTROL_CALLBACK; i++) {
+				usbd_dev->user_control_callback[i].cb = NULL;
+			}
+
+			for (int i = 0; i < MAX_USER_SET_CONFIG_CALLBACK; i++) {
+				if (usbd_dev->user_callback_set_config[i]) {
+					usbd_dev->user_callback_set_config[i] (usbd_dev, event->u.number);
+				}
+			}
+			break;
+
+		case USG_EVENT_ENDPOINT_ENABLE:{
+				int dir = event->u.number & USB_ENDPOINT_DIR_MASK ? USB_TRANSACTION_IN : USB_TRANSACTION_OUT;
+				int addr = event->u.number & USB_ENDPOINT_ADDRESS_MASK;
+				struct usbd_endpoint *ep = &usbd_dev->ep[addr][dir];
+
+				ep->gadget_ep = usb_gadget_endpoint(gadget, event->u.number);
+				ep->buf = malloc(ep->max_len);
+
+				if (ep->endpoint_callback != NULL && dir == USB_TRANSACTION_OUT) {
+					pthread_create(&ep->thread, NULL, usbd_read_thread, ep);
+				}
+			}
+			break;
+
+		case USG_EVENT_ENDPOINT_DISABLE:{
+				int dir = event->u.number & USB_ENDPOINT_DIR_MASK ? USB_TRANSACTION_IN : USB_TRANSACTION_OUT;
+				int addr = event->u.number & USB_ENDPOINT_ADDRESS_MASK;
+				struct usbd_endpoint *ep = &usbd_dev->ep[addr][dir];
+
+				if (ep->gadget_ep) {
+					usb_gadget_endpoint_close(ep->gadget_ep);
+					ep->gadget_ep = NULL;
+				}
+
+				if (ep->thread) {
+					pthread_join(ep->thread, NULL);
+					ep->thread = 0;
+				}
+
+				free(ep->buf);
+				ep->buf = NULL;
+			}
+			break;
+
+		case USG_EVENT_DISCONNECT:
+			for (int addr = 0; addr < MAX_ENDPOINT; addr++) {
+				for (int dir = 0; dir < 2; dir++) {
+					struct usbd_endpoint *ep = &usbd_dev->ep[addr][dir];
+
+					if (ep->gadget_ep) {
+						usb_gadget_endpoint_close(ep->gadget_ep);
+						ep->gadget_ep = NULL;
+					}
+
+					if (ep->thread) {
+						pthread_join(ep->thread, NULL);
+						ep->thread = 0;
+					}
+
+					free(ep->buf);
+					ep->buf = NULL;
+				}
+			}
+			break;
+
+		case USG_EVENT_CONNECT:
+		case USG_EVENT_SUSPEND:
+			break;
 	}
+
 	return 0;
 }
 
-#endif
+usbd_device *usbd_init(const usbd_driver *driver, const struct usb_device_descriptor *device_descriptor,
+                       const struct usb_config_descriptor *config_descriptor, const char **strings, int num_strings,
+                       uint8_t *control_buffer, uint16_t control_buffer_size)
+{
+	(void) driver;
+
+	struct _usbd_device *usbd_dev = calloc(sizeof(struct _usbd_device), 1);
+
+	usbd_dev->control_buffer = control_buffer;
+	usbd_dev->control_buffer_size = control_buffer_size;
+
+	for (int addr = 0; addr < MAX_ENDPOINT; addr++) {
+		for (int dir = 0; dir < 2; dir++) {
+			struct usbd_endpoint *ep = &usbd_dev->ep[addr][dir];
+
+			pthread_mutex_init(&ep->mutex, NULL);
+			pthread_cond_init(&ep->cond, NULL);
+		}
+	}
+
+	struct usb_gadget_strings *usb_gadget_strings = calloc(sizeof(struct usb_gadget_strings), 1);
+
+	usb_gadget_strings->language = 0x409;	// USB_LANGID_ENGLISH_US
+	usb_gadget_strings->strings = calloc(sizeof(struct usb_gadget_string), num_strings);
+
+	for (int i = 0; i < num_strings; i++) {
+		usb_gadget_strings->strings[i].id = i + 1;
+		usb_gadget_strings->strings[i].s = strings[i];
+	}
+
+	int config_index = 0;
+	struct usb_descriptor_header **config = calloc(sizeof(struct usb_descriptor_header *), MAX_CONFIG_DESCRIPTOR);
+
+	config[config_index++] = (struct usb_descriptor_header *) config_descriptor;
+
+	/* For each interface... */
+	for (int i = 0; i < config_descriptor->bNumInterfaces; i++) {
+		/* For each alternate setting... */
+		for (int j = 0; j < config_descriptor->interface[i].num_altsetting; j++) {
+			const struct usb_interface_descriptor *iface = &config_descriptor->interface[i].altsetting[j];
+			config[config_index++] = (struct usb_descriptor_header *) iface;
+			/* Copy extra bytes (function descriptors). */
+			if (iface->extra) {
+				config[config_index++] = (struct usb_descriptor_header *) iface->extra;
+			}
+			/* For each endpoint... */
+			for (int k = 0; k < iface->bNumEndpoints; k++) {
+				const struct usb_endpoint_descriptor *ep = &iface->endpoint[k];
+
+				config[config_index++] = (struct usb_descriptor_header *) ep;
+
+				/* Copy extra bytes (class specific). */
+				if (ep->extra) {
+					config[config_index++] = (struct usb_descriptor_header *) ep->extra;
+				}
+			}
+		}
+	}
+
+	config[config_index++] = NULL;
+
+	struct usb_gadget_device *gadget_description = calloc(sizeof(struct usb_gadget_device), 1);
+
+	gadget_description->device = (struct usb_device_descriptor *) device_descriptor;
+	gadget_description->config = config;
+	gadget_description->hs_config = config;
+	gadget_description->strings = usb_gadget_strings;
+
+	usb_gadget_dev_handle *gadget = usb_gadget_open(gadget_description);
+
+	if (!gadget) {
+		fprintf(stderr, "Error with usb_gadget_open\n");
+		exit(1);
+	}
+
+	usbd_dev->gadget = gadget;
+	usb_gadget_set_event_cb(gadget, usbd_event_dispatch, usbd_dev);
+
+	usb_gadget_set_debug_level(gadget, 999);
+
+	return usbd_dev;
+}
+
+int usbd_register_set_config_callback(usbd_device *usbd_dev, usbd_set_config_callback callback)
+{
+	for (int i = 0; i < MAX_USER_SET_CONFIG_CALLBACK; i++) {
+		if (usbd_dev->user_callback_set_config[i]) {
+			continue;
+		}
+
+		usbd_dev->user_callback_set_config[i] = callback;
+		return 0;
+	}
+
+	return -1;
+}
+
+void usbd_disconnect(usbd_device *usbd_dev, bool disconnected)
+{
+	(void) usbd_dev;
+	(void) disconnected;
+	//not used
+}

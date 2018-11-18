@@ -10,6 +10,7 @@ OBJS += timer.o
 ifdef PIZERO
 OBJS += usb.o
 OBJS += oled_drivers.o
+OBJS += usb-gadget.o
 else
 OBJS += buttons.o
 OBJS += udp.o
