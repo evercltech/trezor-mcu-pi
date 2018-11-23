@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2009 Daiki Ueno <ueno@unixuser.org>
+ * Modified Copyright (C) 2018 Yannick Heneault <yheneaul@gmail.com>
  * This file is part of libusb-gadget.
  *
  * libusb-gadget is free software: you can redistribute it and/or modify
@@ -31,7 +32,7 @@
 #include <errno.h>
 #include <linux/usb/gadgetfs.h>
 #include "usb-gadget.h"
-#include "list.h"
+#include "usb-gadget-list.h"
 
 #define GADGETFS_DEVICE_PATH "/dev/gadget"
 #define USB_BUFSIZ (7 * 1024)
