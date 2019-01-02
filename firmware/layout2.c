@@ -252,7 +252,7 @@ void layoutHome(void)
 	}
 	if (storage_noBackup()) {
 		oledBox(0, 0, 127, 8, false);
-		oledDrawStringCenter(0, "NO BACKUP!", FONT_STANDARD);
+		oledDrawStringCenter(0, "SEEDLESS", FONT_STANDARD);
 	} else
 	if (storage_unfinishedBackup()) {
 		oledBox(0, 0, 127, 8, false);
@@ -320,7 +320,49 @@ void layoutConfirmOutput(const CoinInfo *coin, const TxOutputType *out)
 	render_address_dialog(coin, address, _("Confirm sending"), str_out, extra_line);
 }
 
-bool is_valid_ascii(const uint8_t *data, uint32_t size)
+void layoutConfirmOmni(const uint8_t *data, uint32_t size)
+{
+	const char *desc;
+	char str_out[32];
+	const uint32_t tx_type = *(const uint32_t *)(data + 4);
+	if (tx_type == 0x00000000 && size == 20) {  // OMNI simple send
+		desc = _("Simple send of ");
+		const uint32_t currency = *(const uint32_t *)(data + 8);
+		const char *suffix = "UNKN";
+		switch (currency) {
+			case 1:
+				suffix = "OMNI";
+				break;
+			case 2:
+				suffix = "tOMNI";
+				break;
+			case 3:
+				suffix = "MAID";
+				break;
+			case 31:
+				suffix = "USDT";
+				break;
+		}
+		const uint64_t amount = *(const uint64_t *)(data + 12);
+		bn_format_uint64(amount, NULL, suffix, BITCOIN_DIVISIBILITY, 0, false, str_out, sizeof(str_out));
+	} else {
+		desc = _("Unknown transaction");
+		str_out[0] = 0;
+	}
+	layoutDialogSwipe(&bmp_icon_question,
+		_("Cancel"),
+		_("Confirm"),
+		NULL,
+		_("Confirm OMNI Transaction:"),
+		NULL,
+		desc,
+		NULL,
+		str_out,
+		NULL
+	);
+}
+
+static bool is_valid_ascii(const uint8_t *data, uint32_t size)
 {
 	for (uint32_t i = 0; i < size; i++) {
 		if (data[i] < ' ' || data[i] > '~') {

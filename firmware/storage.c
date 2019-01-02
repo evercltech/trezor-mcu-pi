@@ -107,12 +107,12 @@ static bool sessionSeedCached, sessionSeedUsesPassphrase;
 
 static uint8_t CONFIDENTIAL sessionSeed[64];
 
-static bool sessionPinCached;
+static bool sessionPinCached = false;
 
-static bool sessionPassphraseCached;
+static bool sessionPassphraseCached = false;
 static char CONFIDENTIAL sessionPassphrase[51];
 
-#define STORAGE_VERSION 9
+#define STORAGE_VERSION 10
 
 void storage_show_error(void)
 {
@@ -146,6 +146,7 @@ bool storage_from_flash(void)
 	// version 7: since 1.5.1
 	// version 8: since 1.5.2
 	// version 9: since 1.6.1
+	// version 10: since 1.7.2
 	if (version > STORAGE_VERSION) {
 		// downgrade -> clear storage
 		return false;
@@ -175,6 +176,9 @@ bool storage_from_flash(void)
 	} else if (version <= 9) {
 		// added u2froot, unfinished_backup and auto_lock_delay_ms
 		old_storage_size = OLD_STORAGE_SIZE(auto_lock_delay_ms);
+	} else if (version <= 10) {
+		// added no_backup
+		old_storage_size = OLD_STORAGE_SIZE(no_backup);
 	}
 
 	// erase newly added fields
@@ -246,7 +250,7 @@ void session_clear(bool clear_pin)
 	sessionPassphraseCached = false;
 	memzero(&sessionPassphrase, sizeof(sessionPassphrase));
 	if (clear_pin) {
-		sessionPinCached = false;
+		session_uncachePin();
 	}
 }
 
@@ -289,9 +293,6 @@ static void storage_commit_locked(bool update)
 		if (storageUpdate.has_passphrase_protection) {
 			sessionSeedCached = false;
 			sessionPassphraseCached = false;
-		}
-		if (storageUpdate.has_pin) {
-			sessionPinCached = false;
 		}
 
 		storageUpdate.version = STORAGE_VERSION;
@@ -678,7 +679,7 @@ void storage_setPin(const char *pin)
 {
 	storageUpdate.has_pin = true;
 	strlcpy(storageUpdate.pin, pin, sizeof(storageUpdate.pin));
-	sessionPinCached = false;
+	session_cachePin();
 }
 
 const char *storage_getPin(void)
@@ -727,6 +728,11 @@ bool session_getState(const uint8_t *salt, uint8_t *state, const char *passphras
 void session_cachePin(void)
 {
 	sessionPinCached = true;
+}
+
+void session_uncachePin(void)
+{
+	sessionPinCached = false;
 }
 
 bool session_isPinCached(void)
