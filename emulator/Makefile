@@ -7,11 +7,7 @@ OBJS += oled.o
 OBJS += rng.o
 OBJS += timer.o
 
-ifdef PIZERO
-OBJS += usb.o
-OBJS += oled_drivers.o
-OBJS += usb-gadget.o
-else
+ifndef PIZERO
 OBJS += buttons.o
 OBJS += udp.o
 endif

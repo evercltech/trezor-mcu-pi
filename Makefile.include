@@ -86,13 +86,15 @@ CFLAGS   += -include stdio.h
 
 LDFLAGS  += -L$(TOP_DIR)emulator
 
+LDLIBS   += -ltrezor -lemulator
+LIBDEPS  += $(TOP_DIR)/libtrezor.a $(TOP_DIR)emulator/libemulator.a
+
 ifdef PIZERO
 CFLAGS += -DPIZERO=1
-LDFLAGS += -lbcm2835
+LDFLAGS += -L$(TOP_DIR)emulator/pizero
+LIBDEPS  += $(TOP_DIR)emulator/pizero/libpizero.a
+LDLIBS   += -lpizero -lbcm2835 -pthread
 endif
-
-LDLIBS   += -ltrezor -lemulator -pthread
-LIBDEPS  += $(TOP_DIR)/libtrezor.a $(TOP_DIR)emulator/libemulator.a
 
 ifeq ($(HEADLESS),1)
 CFLAGS   += -DHEADLESS=1

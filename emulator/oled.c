@@ -2,7 +2,7 @@
  * This file is part of the TREZOR project, https://trezor.io/
  *
  * Copyright (C) 2017 Saleem Rashid <trezor@saleemrashid.com>
- * Modified Copyright (C) 2018 Yannick Heneault <yheneaul@gmail.com>
+ * Modified Copyright (C) 2018, 2019 Yannick Heneault <yheneaul@gmail.com>
  *
  * This library is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -31,8 +31,7 @@ void emulatorPoll(void) {}
 #include <SDL.h>
 
 #ifdef PIZERO
-#include "oled_drivers.h"
-static uint8_t oled_type = 0;
+#include "pizero/pizero.h"
 #endif
 
 static SDL_Renderer *renderer = NULL;
@@ -114,19 +113,7 @@ void oledInit(void) {
 	texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, OLED_WIDTH, OLED_HEIGHT);
 
 #ifdef PIZERO
-	//output on oled if configured also
-	if (getenv("TREZOR_OLED_TYPE")) {
-		oled_type = atoi(getenv("TREZOR_OLED_TYPE"));
-		bool flip = atoi(getenv("TREZOR_OLED_FLIP")) ? true : false;
-
-		if (oled_type > 0 && oled_type < OLED_LAST_OLED) {
-			bool init_done = oled_init(oled_type, flip);
-			if (!init_done) {
-				fprintf(stderr, "Failed to initialize oled");
-				exit(1);
-			}
-		}
-	}
+	pizeroInit();	
 #endif
 
 	oledClear();
@@ -156,9 +143,7 @@ void oledRefresh(void) {
 	SDL_RenderPresent(renderer);
 
 #ifdef PIZERO
-	if (oled_type > 0 && oled_type < OLED_LAST_OLED) {
-		oled_display(buffer);
-	}
+	pizeroRefresh(buffer);
 #endif
 
 	/* Return it back */

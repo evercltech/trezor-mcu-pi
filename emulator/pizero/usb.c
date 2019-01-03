@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 Yannick Heneault <yheneaul@gmail.com>
+ * Copyright (C) 2018, 2019 Yannick Heneault <yheneaul@gmail.com>
  *
  * This library is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -31,8 +31,6 @@
 struct usb_ctrlrequest; // forward declare to avoid including ch9.h
 
 #include "usb-gadget.h"
-
-#include "emulator.h"
 
 #define MAX_ENDPOINT 8
 #define MAX_USER_CONTROL_CALLBACK 4
