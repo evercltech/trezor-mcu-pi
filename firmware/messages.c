@@ -25,6 +25,7 @@
 #include "fsm.h"
 #include "util.h"
 #include "gettext.h"
+#include "memzero.h"
 
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -35,7 +36,7 @@ struct MessagesMap_t {
 	char dir; 	// i = in, o = out
 	uint16_t msg_id;
 	const pb_field_t *fields;
-	void (*process_func)(void *ptr);
+	void (*process_func)(const void *ptr);
 };
 
 static const struct MessagesMap_t MessagesMap[] = {
@@ -43,6 +44,8 @@ static const struct MessagesMap_t MessagesMap[] = {
 	// end
 	{0, 0, 0, 0, 0}
 };
+
+#include "messages_map_limits.h"
 
 const pb_field_t *MessageFields(char type, char dir, uint16_t msg_id)
 {
@@ -219,8 +222,8 @@ enum {
 
 void msg_process(char type, uint16_t msg_id, const pb_field_t *fields, uint8_t *msg_raw, uint32_t msg_size)
 {
-	static CONFIDENTIAL uint8_t msg_data[MSG_IN_SIZE];
-	memset(msg_data, 0, sizeof(msg_data));
+	static uint8_t msg_data[MSG_IN_SIZE];
+	memzero(msg_data, sizeof(msg_data));
 	pb_istream_t stream = pb_istream_from_buffer(msg_raw, msg_size);
 	bool status = pb_decode(&stream, fields, msg_data);
 	if (status) {
@@ -233,7 +236,7 @@ void msg_process(char type, uint16_t msg_id, const pb_field_t *fields, uint8_t *
 void msg_read_common(char type, const uint8_t *buf, uint32_t len)
 {
 	static char read_state = READSTATE_IDLE;
-	static CONFIDENTIAL uint8_t msg_in[MSG_IN_SIZE];
+	static uint8_t msg_in[MSG_IN_SIZE];
 	static uint16_t msg_id = 0xFFFF;
 	static uint32_t msg_size = 0;
 	static uint32_t msg_pos = 0;

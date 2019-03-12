@@ -1,4 +1,4 @@
-APPVER = 1.0.0
+APPVER = 1.8.0
 
 NAME  = trezor
 
@@ -11,11 +11,13 @@ ifeq ($(EMULATOR),1)
 else
 OBJS += usb.o
 OBJS += bl_check.o
+OBJS += otp.o
+OBJS += header.o
 endif
 
 OBJS += u2f.o
 OBJS += messages.o
-OBJS += storage.o
+OBJS += config.o
 OBJS += trezor.o
 OBJS += pinmatrix.o
 OBJS += fsm.o
@@ -79,9 +81,17 @@ OBJS += ../vendor/trezor-crypto/aes/aeskey.o
 OBJS += ../vendor/trezor-crypto/aes/aestab.o
 OBJS += ../vendor/trezor-crypto/aes/aes_modes.o
 
+OBJS += ../vendor/trezor-crypto/chacha20poly1305/chacha20poly1305.o
+OBJS += ../vendor/trezor-crypto/chacha20poly1305/chacha_merged.o
+OBJS += ../vendor/trezor-crypto/chacha20poly1305/poly1305-donna.o
+OBJS += ../vendor/trezor-crypto/chacha20poly1305/rfc7539.o
+
 OBJS += ../vendor/trezor-crypto/nem.o
 
-OBJS += ../vendor/trezor-qrenc/qr_encode.o
+OBJS += ../vendor/QR-Code-generator/c/qrcodegen.o
+
+OBJS += ../vendor/trezor-storage/storage.o
+OBJS += ../vendor/trezor-storage/norcow.o
 
 OBJS += ../vendor/nanopb/pb_common.o
 OBJS += ../vendor/nanopb/pb_decode.o
@@ -113,7 +123,6 @@ DEBUG_LOG  ?= 0
 
 CFLAGS += -Wno-sequence-point
 CFLAGS += -I../vendor/nanopb -Iprotob -DPB_FIELD_16BIT=1
-CFLAGS += -DQR_MAX_VERSION=0
 CFLAGS += -DDEBUG_LINK=$(DEBUG_LINK)
 CFLAGS += -DDEBUG_LOG=$(DEBUG_LOG)
 CFLAGS += -DSCM_REVISION='"$(shell git rev-parse HEAD | sed 's:\(..\):\\x\1:g')"'

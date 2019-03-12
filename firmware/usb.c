@@ -25,7 +25,7 @@
 #include "debug.h"
 #include "messages.h"
 #include "u2f.h"
-#include "storage.h"
+#include "config.h"
 #include "util.h"
 #include "timer.h"
 
@@ -56,7 +56,7 @@
 #define USB_STRINGS \
 	X(MANUFACTURER, "SatoshiLabs") \
 	X(PRODUCT, "TREZOR") \
-	X(SERIAL_NUMBER, storage_uuid_str) \
+	X(SERIAL_NUMBER, config_uuid_str) \
 	X(INTERFACE_MAIN,  "TREZOR Interface") \
 	X(INTERFACE_DEBUG, "TREZOR Debug Link Interface") \
 	X(INTERFACE_U2F,   "TREZOR U2F Interface") \
@@ -259,6 +259,8 @@ static int hid_control_request(usbd_device *dev, struct usb_setup_data *req, uin
 	(void)complete;
 	(void)dev;
 
+	wait_random();
+
 	if ((req->bmRequestType != 0x81) ||
 		(req->bRequest != USB_REQ_GET_DESCRIPTOR) ||
 		(req->wValue != 0x2200))
@@ -266,7 +268,7 @@ static int hid_control_request(usbd_device *dev, struct usb_setup_data *req, uin
 
 	debugLog(0, "", "hid_control_request u2f");
 	*buf = (uint8_t *)hid_report_descriptor_u2f;
-	*len = MIN(*len, sizeof(hid_report_descriptor_u2f));
+	*len = MIN_8bits(*len, sizeof(hid_report_descriptor_u2f));
 	return 1;
 }
 

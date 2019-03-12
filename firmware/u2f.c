@@ -21,7 +21,7 @@
 #include <ecdsa.h>
 
 #include "debug.h"
-#include "storage.h"
+#include "config.h"
 #include "bip32.h"
 #include "layout2.h"
 #include "usb.h"
@@ -33,6 +33,7 @@
 #include "hmac.h"
 #include "util.h"
 #include "gettext.h"
+#include "memzero.h"
 
 #include "u2f/u2f.h"
 #include "u2f/u2f_hid.h"
@@ -174,6 +175,8 @@ void u2fhid_init_cmd(const U2FHID_FRAME *f) {
 
 void u2fhid_read_start(const U2FHID_FRAME *f) {
 	U2F_ReadBuffer readbuffer;
+	memzero(&readbuffer, sizeof(readbuffer));
+
 	if (!(f->type & TYPE_INIT)) {
 		return;
 	}
@@ -276,7 +279,7 @@ void u2fhid_wink(const uint8_t *buf, uint32_t len)
 		dialog_timeout = U2F_TIMEOUT;
 
 	U2FHID_FRAME f;
-	memset(&f, 0, sizeof(f));
+	memzero(&f, sizeof(f));
 	f.cid = cid;
 	f.init.cmd = U2FHID_WINK;
 	f.init.bcntl = 0;
@@ -288,8 +291,7 @@ void u2fhid_init(const U2FHID_FRAME *in)
 	const U2FHID_INIT_REQ *init_req = (const U2FHID_INIT_REQ *)&in->init.data;
 	U2FHID_FRAME f;
 	U2FHID_INIT_RESP resp;
-
-	memset(&resp, 0, sizeof(resp));
+	memzero(&resp, sizeof(resp));
 
 	debugLog(0, "", "u2fhid_init");
 
@@ -298,7 +300,7 @@ void u2fhid_init(const U2FHID_FRAME *in)
 		return;
 	}
 
-	memset(&f, 0, sizeof(f));
+	memzero(&f, sizeof(f));
 	f.cid = in->cid;
 	f.init.cmd = U2FHID_INIT;
 	f.init.bcnth = 0;
@@ -383,7 +385,7 @@ void send_u2fhid_msg(const uint8_t cmd, const uint8_t *data, const uint32_t len)
 
 	// debugLog(0, "", "send_u2fhid_msg");
 
-	memset(&f, 0, sizeof(f));
+	memzero(&f, sizeof(f));
 	f.cid = cid;
 	f.init.cmd = cmd;
 	f.init.bcnth = len >> 8;
@@ -399,7 +401,7 @@ void send_u2fhid_msg(const uint8_t cmd, const uint8_t *data, const uint32_t len)
 	// Cont packet(s)
 	for (; l > 0; l -= psz, p += psz) {
 		// debugLog(0, "", "send_u2fhid_msg con");
-		memset(&f.cont.data, 0, sizeof(f.cont.data));
+		memzero(&f.cont.data, sizeof(f.cont.data));
 		f.cont.seq = seq++;
 		psz = MIN(sizeof(f.cont.data), l);
 		memcpy(f.cont.data, p, psz);
@@ -416,7 +418,7 @@ void send_u2fhid_error(uint32_t fcid, uint8_t err)
 {
 	U2FHID_FRAME f;
 
-	memset(&f, 0, sizeof(f));
+	memzero(&f, sizeof(f));
 	f.cid = fcid;
 	f.init.cmd = U2FHID_ERROR;
 	f.init.bcntl = 1;
@@ -460,7 +462,7 @@ static void getReadableAppId(const uint8_t appid[U2F_APPID_SIZE], const char **a
 static const HDNode *getDerivedNode(uint32_t *address_n, size_t address_n_count)
 {
 	static CONFIDENTIAL HDNode node;
-	if (!storage_getU2FRoot(&node)) {
+	if (!config_getU2FRoot(&node)) {
 		layoutHome();
 		debugLog(0, "", "ERR: Device not init");
 		return 0;
@@ -546,7 +548,7 @@ void u2f_register(const APDU *a)
 	static U2F_REGISTER_REQ last_req;
 	const U2F_REGISTER_REQ *req = (U2F_REGISTER_REQ *)a->data;
 
-	if (!storage_isInitialized()) {
+	if (!config_isInitialized()) {
 		send_u2f_error(U2F_SW_CONDITIONS_NOT_SATISFIED);
 		return;
 	}
@@ -592,7 +594,7 @@ void u2f_register(const APDU *a)
 	if (last_req_state == REG_PASS) {
 		uint8_t data[sizeof(U2F_REGISTER_RESP) + 2];
 		U2F_REGISTER_RESP *resp = (U2F_REGISTER_RESP *)&data;
-		memset(data, 0, sizeof(data));
+		memzero(data, sizeof(data));
 
 		resp->registerId = U2F_REGISTER_ID;
 		resp->keyHandleLen = KEY_HANDLE_LEN;
@@ -654,7 +656,7 @@ void u2f_authenticate(const APDU *a)
 	const U2F_AUTHENTICATE_REQ *req = (U2F_AUTHENTICATE_REQ *)a->data;
 	static U2F_AUTHENTICATE_REQ last_req;
 
-	if (!storage_isInitialized()) {
+	if (!config_isInitialized()) {
 		send_u2f_error(U2F_SW_CONDITIONS_NOT_SATISFIED);
 		return;
 	}
@@ -727,7 +729,7 @@ void u2f_authenticate(const APDU *a)
 		U2F_AUTHENTICATE_RESP *resp =
 			(U2F_AUTHENTICATE_RESP *)&buf;
 
-		const uint32_t ctr = storage_nextU2FCounter();
+		const uint32_t ctr = config_nextU2FCounter();
 		resp->flags = U2F_AUTH_FLAG_TUP;
 		resp->ctr[0] = ctr >> 24 & 0xff;
 		resp->ctr[1] = ctr >> 16 & 0xff;

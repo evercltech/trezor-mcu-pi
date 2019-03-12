@@ -17,13 +17,14 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "common.h"
 #include "trezor.h"
 #include "oled.h"
 #include "bitmaps.h"
 #include "util.h"
 #include "usb.h"
 #include "setup.h"
-#include "storage.h"
+#include "config.h"
 #include "layout.h"
 #include "layout2.h"
 #include "rng.h"
@@ -31,6 +32,11 @@
 #include "buttons.h"
 #include "gettext.h"
 #include "bl_check.h"
+#include "memzero.h"
+#if !EMULATOR
+#include "otp.h"
+#include <libopencm3/stm32/desig.h>
+#endif
 
 /* Screen timeout */
 uint32_t system_millis_lock_start;
@@ -76,12 +82,36 @@ void check_lock_screen(void)
 
 	// if homescreen is shown for too long
 	if (layoutLast == layoutHome) {
-		if ((timer_ms() - system_millis_lock_start) >= storage_getAutoLockDelayMs()) {
+		if ((timer_ms() - system_millis_lock_start) >= config_getAutoLockDelayMs()) {
 			// lock the screen
 			session_clear(true);
 			layoutScreensaver();
 		}
 	}
+}
+
+static void collect_hw_entropy(bool privileged)
+{
+#if EMULATOR
+	(void)privileged;
+	memzero(HW_ENTROPY_DATA, HW_ENTROPY_LEN);
+#else
+	if (privileged) {
+		desig_get_unique_id((uint32_t *)HW_ENTROPY_DATA);
+		// set entropy in the OTP randomness block
+		if (!flash_otp_is_locked(FLASH_OTP_BLOCK_RANDOMNESS)) {
+			uint8_t entropy[FLASH_OTP_BLOCK_SIZE];
+			random_buffer(entropy, FLASH_OTP_BLOCK_SIZE);
+			flash_otp_write(FLASH_OTP_BLOCK_RANDOMNESS, 0, entropy, FLASH_OTP_BLOCK_SIZE);
+			flash_otp_lock(FLASH_OTP_BLOCK_RANDOMNESS);
+		}
+		// collect entropy from OTP randomness block
+		flash_otp_read(FLASH_OTP_BLOCK_RANDOMNESS, 0, HW_ENTROPY_DATA + 12, FLASH_OTP_BLOCK_SIZE);
+	} else {
+		// unprivileged mode => use fixed HW_ENTROPY
+		memset(HW_ENTROPY_DATA, 0x3C, HW_ENTROPY_LEN);
+	}
+#endif
 }
 
 int main(void)
@@ -95,26 +125,26 @@ int main(void)
 	setupApp();
 	__stack_chk_guard = random32(); // this supports compiler provided unpredictable stack protection checks
 #endif
-
 	if (!is_mode_unprivileged()) {
-
+		collect_hw_entropy(true);
 		timer_init();
-
 #ifdef APPVER
 		// enable MPU (Memory Protection Unit)
-		mpu_config();
+		mpu_config_firmware();
 #endif
+	} else {
+		collect_hw_entropy(false);
 	}
 
 #if DEBUG_LINK
 	oledSetDebugLink(1);
-	storage_wipe();
+	config_wipe();
 #endif
 
 	oledDrawBitmap(40, 0, &bmp_logo64);
 	oledRefresh();
 
-	storage_init();
+	config_init();
 	layoutHome();
 	usbInit();
 	for (;;) {

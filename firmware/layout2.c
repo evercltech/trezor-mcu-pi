@@ -22,17 +22,18 @@
 #include <ctype.h>
 
 #include "layout2.h"
-#include "storage.h"
+#include "config.h"
 #include "oled.h"
 #include "bitmaps.h"
 #include "string.h"
 #include "util.h"
-#include "qr_encode.h"
+#include "qrcodegen.h"
 #include "timer.h"
 #include "bignum.h"
 #include "secp256k1.h"
 #include "nem2.h"
 #include "gettext.h"
+#include "memzero.h"
 
 #define BITCOIN_DIVISIBILITY (8)
 
@@ -98,7 +99,7 @@ static const char *address_n_str(const uint32_t *address_n, size_t address_n_cou
 			}
 			const uint32_t accnum = address_is_account ? ((address_n[4] & 0x7fffffff) + 1) : (address_n[2] & 0x7fffffff) + 1;
 			if (abbr && accnum < 100) {
-				memset(path, 0, sizeof(path));
+				memzero(path, sizeof(path));
 				strlcpy(path, abbr, sizeof(path));
 				// TODO: how to name accounts?
 				// currently we have "legacy account", "account" and "segwit account"
@@ -115,7 +116,7 @@ static const char *address_n_str(const uint32_t *address_n, size_t address_n_cou
 					strlcat(path, " account #", sizeof(path));
 				}
 				char acc[3];
-				memset(acc, 0, sizeof(acc));
+				memzero(acc, sizeof(acc));
 				if (accnum < 10) {
 					acc[0] = '0' + accnum;
 				} else {
@@ -127,8 +128,8 @@ static const char *address_n_str(const uint32_t *address_n, size_t address_n_cou
 			}
 	}
 
-	//                  "Path: m"    /   i   '
-	static char address_str[7 + 8 * (1 + 9 + 1) + 1];
+	//                  "Path: m"    /    i   '
+	static char address_str[7 + 8 * (1 + 10 + 1) + 1];
 	char *c = address_str + sizeof(address_str) - 1;
 
 	*c = 0; c--;
@@ -163,7 +164,7 @@ const char **split_message(const uint8_t *msg, uint32_t len, uint32_t rowlen)
 	if (rowlen > 32) {
 		rowlen = 32;
 	}
-	memset(str, 0, sizeof(str));
+	memzero(str, sizeof(str));
 	strlcpy(str[0], (char *)msg, rowlen + 1);
 	if (len > rowlen) {
 		strlcpy(str[1], (char *)msg + rowlen, rowlen + 1);
@@ -186,7 +187,7 @@ const char **split_message(const uint8_t *msg, uint32_t len, uint32_t rowlen)
 const char **split_message_hex(const uint8_t *msg, uint32_t len)
 {
 	char hex[32 * 2 + 1];
-	memset(hex, 0, sizeof(hex));
+	memzero(hex, sizeof(hex));
 	uint32_t size = len;
 	if (len > 32) {
 		size = 32;
@@ -234,33 +235,43 @@ void layoutHome(void)
 		layoutSwipe();
 	}
 	layoutLast = layoutHome;
-	const char *label = storage_isInitialized() ? storage_getLabel() : _("Go to trezor.io/start");
-	const uint8_t *homescreen = storage_getHomescreen();
-	if (homescreen) {
+
+	char label[MAX_LABEL_LEN + 1] = _("Go to trezor.io/start");
+	if (config_isInitialized()) {
+		config_getLabel(label, sizeof(label));
+	}
+
+	uint8_t homescreen[HOMESCREEN_SIZE];
+	if (config_getHomescreen(homescreen, sizeof(homescreen))) {
 		BITMAP b;
 		b.width = 128;
 		b.height = 64;
 		b.data = homescreen;
 		oledDrawBitmap(0, 0, &b);
 	} else {
-		if (label && strlen(label) > 0) {
+		if (label[0] != '\0') {
 			oledDrawBitmap(44, 4, &bmp_logo48);
-			oledDrawStringCenter(OLED_HEIGHT - 8, label, FONT_STANDARD);
+			oledDrawStringCenter(OLED_WIDTH / 2, OLED_HEIGHT - 8, label, FONT_STANDARD);
 		} else {
 			oledDrawBitmap(40, 0, &bmp_logo64);
 		}
 	}
-	if (storage_noBackup()) {
+
+	bool no_backup = false;
+	bool unfinished_backup = false;
+	bool needs_backup = false;
+	config_getNoBackup(&no_backup);
+	config_getUnfinishedBackup(&unfinished_backup);
+	config_getNeedsBackup(&needs_backup);
+	if (no_backup) {
 		oledBox(0, 0, 127, 8, false);
-		oledDrawStringCenter(0, "SEEDLESS", FONT_STANDARD);
-	} else
-	if (storage_unfinishedBackup()) {
+		oledDrawStringCenter(OLED_WIDTH / 2, 0, "SEEDLESS", FONT_STANDARD);
+	} else if (unfinished_backup) {
 		oledBox(0, 0, 127, 8, false);
-		oledDrawStringCenter(0, "BACKUP FAILED!", FONT_STANDARD);
-	} else
-	if (storage_needsBackup()) {
+		oledDrawStringCenter(OLED_WIDTH / 2, 0, "BACKUP FAILED!", FONT_STANDARD);
+	} else if (needs_backup) {
 		oledBox(0, 0, 127, 8, false);
-		oledDrawStringCenter(0, "NEEDS BACKUP!", FONT_STANDARD);
+		oledDrawStringCenter(OLED_WIDTH / 2, 0, "NEEDS BACKUP!", FONT_STANDARD);
 	}
 	oledRefresh();
 
@@ -542,6 +553,8 @@ void layoutResetWord(const char *word, int pass, int word_pos, bool last)
 	oledRefresh();
 }
 
+#define QR_MAX_VERSION 9
+
 void layoutAddress(const char *address, const char *desc, bool qrcode, bool ignorecase, const uint32_t *address_n, size_t address_n_count, bool address_is_account)
 {
 	if (layoutLast != layoutAddress) {
@@ -553,7 +566,6 @@ void layoutAddress(const char *address, const char *desc, bool qrcode, bool igno
 
 	uint32_t addrlen = strlen(address);
 	if (qrcode) {
-		static unsigned char bitdata[QR_MAX_BITDATA];
 		char address_upcase[addrlen + 1];
 		if (ignorecase) {
 			for (uint32_t i = 0; i < addrlen + 1; i++) {
@@ -561,16 +573,28 @@ void layoutAddress(const char *address, const char *desc, bool qrcode, bool igno
 					address[i] + 'A' - 'a' : address[i];
 			}
 		}
-		int side = qr_encode(addrlen <= (ignorecase ? 60 : 40) ? QR_LEVEL_M : QR_LEVEL_L, 0,
-							 ignorecase ? address_upcase : address, 0, bitdata);
+		uint8_t codedata[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_MAX_VERSION)];
+		uint8_t tempdata[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_MAX_VERSION)];
+
+		int side = 0;
+		if (qrcodegen_encodeText(
+			ignorecase ? address_upcase : address,
+			tempdata,
+			codedata,
+			qrcodegen_Ecc_LOW,
+			qrcodegen_VERSION_MIN,
+			QR_MAX_VERSION,
+			qrcodegen_Mask_AUTO,
+			true)) {
+				side = qrcodegen_getSize(codedata);
+			}
 
 		oledInvert(0, 0, 63, 63);
 		if (side > 0 && side <= 29) {
 			int offset = 32 - side;
 			for (int i = 0; i < side; i++) {
 				for (int j = 0; j< side; j++) {
-					int a = j * side + i;
-					if (bitdata[a / 8] & (1 << (7 - a % 8))) {
+					if (qrcodegen_getModule(codedata, i, j)) {
 						oledBox(offset + i * 2, offset + j * 2,
 								offset + 1 + i * 2, offset + 1 + j * 2, false);
 					}
@@ -580,8 +604,7 @@ void layoutAddress(const char *address, const char *desc, bool qrcode, bool igno
 			int offset = 32 - (side / 2); 
 			for (int i = 0; i < side; i++) {
 				for (int j = 0; j< side; j++) {
-					int a = j * side + i;
-					if (bitdata[a / 8] & (1 << (7 - a % 8))) {
+					if (qrcodegen_getModule(codedata, i, j)) {
 						oledClearPixel(offset + i, offset + j);
 					}
 				}

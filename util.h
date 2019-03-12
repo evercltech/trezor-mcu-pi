@@ -27,13 +27,17 @@
 #if !EMULATOR
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/cm3/vector.h>
+#include "timer.h"
 #endif
 
 // Statement expressions make these macros side-effect safe
+#define MIN_8bits(a, b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? (_a & 0xFF) : (_b & 0xFF); })
 #define MIN(a, b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
 #define MAX(a, b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 
 void delay(uint32_t wait);
+
+void wait_random(void);
 
 // converts uint32 to hexa (8 digits)
 void uint32hex(uint32_t num, char *str);
@@ -42,8 +46,9 @@ void uint32hex(uint32_t num, char *str);
 void data2hex(const void *data, uint32_t len, char *str);
 
 // read protobuf integer and advance pointer
-uint32_t readprotobufint(uint8_t **ptr);
+uint32_t readprotobufint(const uint8_t **ptr);
 
+// defined in startup.s (or setup.c for emulator)
 extern void __attribute__((noreturn)) shutdown(void);
 
 #if !EMULATOR
@@ -64,7 +69,8 @@ static inline void __attribute__((noreturn)) jump_to_firmware(const vector_table
 		// Set stack pointer
 		__asm__ volatile("msr msp, %0" :: "r" (vector_table->initial_sp_value));
 	} else {                                  // untrusted firmware
-		mpu_config();                         // * configure MPU
+		timer_init();
+		mpu_config_firmware();                // * configure MPU for the firmware
 		__asm__ volatile("msr msp, %0" :: "r" (_stack));
 	}
 

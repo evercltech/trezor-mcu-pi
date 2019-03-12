@@ -17,11 +17,30 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "rng.h"
 #include "util.h"
 
 inline void delay(uint32_t wait)
 {
 	while (--wait > 0) __asm__("nop");
+}
+
+void wait_random(void)
+{
+    int wait = random32() & 0xff;
+    volatile int i = 0;
+    volatile int j = wait;
+    while (i < wait) {
+        if (i + j != wait) {
+            shutdown();
+        }
+        ++i;
+        --j;
+    }
+    // Double-check loop completion.
+    if (i != wait || j != 0) {
+        shutdown();
+    }
 }
 
 static const char *hexdigits = "0123456789ABCDEF";
@@ -44,7 +63,7 @@ void data2hex(const void *data, uint32_t len, char *str)
 	str[len * 2] = 0;
 }
 
-uint32_t readprotobufint(uint8_t **ptr)
+uint32_t readprotobufint(const uint8_t **ptr)
 {
 	uint32_t result = (**ptr & 0x7F);
 	if (**ptr & 0x80) {

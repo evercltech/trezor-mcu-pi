@@ -1,7 +1,7 @@
 /*
  * This file is part of the TREZOR project, https://trezor.io/
  *
- * Copyright (C) 2014 Pavol Rusnak <stick@satoshilabs.com>
+ * Copyright (C) 2019 Pavol Rusnak <stick@satoshilabs.com>
  *
  * This library is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -17,10 +17,20 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __SERIALNO_H__
-#define __SERIALNO_H__
+#ifndef __OTP_H__
+#define __OTP_H__
 
-// buffer has to be (at least) 25 chars long
-void fill_serialno_fixed(char *s);
+#include <stdint.h>
+#include <stdbool.h>
+
+#define FLASH_OTP_NUM_BLOCKS      16
+#define FLASH_OTP_BLOCK_SIZE      32
+
+#define FLASH_OTP_BLOCK_RANDOMNESS  3
+
+bool flash_otp_is_locked(uint8_t block);
+bool flash_otp_lock(uint8_t block);
+bool flash_otp_read(uint8_t block, uint8_t offset, uint8_t *data, uint8_t datalen);
+bool flash_otp_write(uint8_t block, uint8_t offset, const uint8_t *data, uint8_t datalen);
 
 #endif

@@ -17,6 +17,50 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+void fsm_msgEthereumGetPublicKey(const EthereumGetPublicKey *msg)
+{
+	RESP_INIT(EthereumPublicKey);
+
+	CHECK_INITIALIZED
+
+	CHECK_PIN
+
+	// we use Bitcoin-like format for ETH
+	const CoinInfo *coin = fsm_getCoin(true, "Bitcoin");
+	if (!coin) return;
+
+	const char *curve = coin->curve_name;
+	uint32_t fingerprint;
+	HDNode *node = node = fsm_getDerivedNode(curve, msg->address_n, msg->address_n_count, &fingerprint);
+	if (!node) return;
+	hdnode_fill_public_key(node);
+
+	if (msg->has_show_display && msg->show_display) {
+		layoutPublicKey(node->public_key);
+		if (!protectButton(ButtonRequestType_ButtonRequest_PublicKey, true)) {
+			fsm_sendFailure(FailureType_Failure_ActionCancelled, NULL);
+			layoutHome();
+			return;
+		}
+	}
+
+	resp->node.depth = node->depth;
+	resp->node.fingerprint = fingerprint;
+	resp->node.child_num = node->child_num;
+	resp->node.chain_code.size = 32;
+	memcpy(resp->node.chain_code.bytes, node->chain_code, 32);
+	resp->node.has_private_key = false;
+	resp->node.has_public_key = true;
+	resp->node.public_key.size = 33;
+	memcpy(resp->node.public_key.bytes, node->public_key, 33);
+	resp->has_xpub = true;
+
+	hdnode_serialize_public(node, fingerprint, coin->xpub_magic, resp->xpub, sizeof(resp->xpub));
+
+	msg_write(MessageType_MessageType_EthereumPublicKey, resp);
+	layoutHome();
+}
+
 void fsm_msgEthereumSignTx(EthereumSignTx *msg)
 {
 	CHECK_INITIALIZED
@@ -45,28 +89,31 @@ void fsm_msgEthereumGetAddress(const EthereumGetAddress *msg)
 	const HDNode *node = fsm_getDerivedNode(SECP256K1_NAME, msg->address_n, msg->address_n_count, NULL);
 	if (!node) return;
 
-	resp->address.size = 20;
+	uint8_t pubkeyhash[20];
 
-	if (!hdnode_get_ethereum_pubkeyhash(node, resp->address.bytes))
+	if (!hdnode_get_ethereum_pubkeyhash(node, pubkeyhash))
 		return;
+
+	uint32_t slip44 = (msg->address_n_count > 1) ? (msg->address_n[1] & 0x7fffffff) : 0;
+	bool rskip60 = false;
+	uint32_t chain_id = 0;
+	// constants from trezor-common/defs/ethereum/networks.json
+	switch (slip44) {
+		case 137: rskip60 = true; chain_id = 30; break;
+		case 37310: rskip60 = true; chain_id = 31; break;
+	}
+
+	resp->has_address = true;
+	resp->address[0] = '0';
+	resp->address[1] = 'x';
+	ethereum_address_checksum(pubkeyhash, resp->address + 2, rskip60, chain_id);
+	// ethereum_address_checksum adds trailing zero
 
 	if (msg->has_show_display && msg->show_display) {
 		char desc[16];
 		strlcpy(desc, "Address:", sizeof(desc));
 
-		uint32_t slip44 = msg->address_n[1] & 0x7fffffff;
-		bool rskip60 = false;
-		uint32_t chain_id = 0;
-		// constants from trezor-common/defs/ethereum/networks.json
-		switch (slip44) {
-			case 137: rskip60 = true; chain_id = 30; break;
-			case 37310: rskip60 = true; chain_id = 31; break;
-		}
-
-		char address[43] = { '0', 'x' };
-		ethereum_address_checksum(resp->address.bytes, address + 2, rskip60, chain_id);
-
-		if (!fsm_layoutAddress(address, desc, false, 0, msg->address_n, msg->address_n_count, true)) {
+		if (!fsm_layoutAddress(resp->address, desc, false, 0, msg->address_n, msg->address_n_count, true)) {
 			return;
 		}
 	}
@@ -107,9 +154,13 @@ void fsm_msgEthereumVerifyMessage(const EthereumVerifyMessage *msg)
 		return;
 	}
 
-	char address[43] = { '0', 'x' };
-	ethereum_address_checksum(msg->address.bytes, address + 2, false, 0);
-	layoutVerifyAddress(NULL, address);
+	uint8_t pubkeyhash[20];
+	if (!ethereum_parse(msg->address, pubkeyhash)) {
+		fsm_sendFailure(FailureType_Failure_DataError, _("Invalid address"));
+		return;
+	}
+
+	layoutVerifyAddress(NULL, msg->address);
 	if (!protectButton(ButtonRequestType_ButtonRequest_Other, false)) {
 		fsm_sendFailure(FailureType_Failure_ActionCancelled, NULL);
 		layoutHome();

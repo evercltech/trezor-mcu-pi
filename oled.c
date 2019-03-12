@@ -24,6 +24,7 @@
 
 #include "oled.h"
 #include "util.h"
+#include "memzero.h"
 
 #define OLED_SETCONTRAST		0x81
 #define OLED_DISPLAYALLON_RESUME	0xA4
@@ -177,7 +178,7 @@ void oledInit()
  */
 void oledClear()
 {
-	memset(_oledbuffer, 0, sizeof(_oledbuffer));
+	memzero(_oledbuffer, sizeof(_oledbuffer));
 }
 
 void oledInvertDebugLink()
@@ -300,9 +301,9 @@ void oledDrawString(int x, int y, const char* text, int font)
 	}
 }
 
-void oledDrawStringCenter(int y, const char* text, int font)
+void oledDrawStringCenter(int x, int y, const char* text, int font)
 {
-	int x = ( OLED_WIDTH - oledStringWidth(text, font) ) / 2;
+	x = x - oledStringWidth(text, font) / 2;
 	oledDrawString(x, y, text, font);
 }
 

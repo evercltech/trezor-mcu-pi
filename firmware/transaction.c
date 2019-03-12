@@ -32,6 +32,7 @@
 #include "messages.pb.h"
 #include "segwit_addr.h"
 #include "cash_addr.h"
+#include "memzero.h"
 
 #define SEGWIT_VERSION_0 0
 
@@ -188,7 +189,7 @@ bool compute_address(const CoinInfo *coin,
 
 int compile_output(const CoinInfo *coin, const HDNode *root, TxOutputType *in, TxOutputBinType *out, bool needs_confirm)
 {
-	memset(out, 0, sizeof(TxOutputBinType));
+	memzero(out, sizeof(TxOutputBinType));
 	out->amount = in->amount;
 	out->decred_script_version = in->decred_script_version;
 	uint8_t addr_raw[MAX_ADDR_RAW_SIZE];
@@ -339,7 +340,7 @@ uint32_t compile_script_multisig(const CoinInfo *coin, const MultisigRedeemScrip
 {
 	if (!multisig->has_m) return 0;
 	const uint32_t m = multisig->m;
-	const uint32_t n = multisig->pubkeys_count;
+	const uint32_t n = cryptoMultisigPubkeyCount(multisig);
 	if (m < 1 || m > 15) return 0;
 	if (n < 1 || n > 15) return 0;
 	uint32_t r = 0;
@@ -347,9 +348,9 @@ uint32_t compile_script_multisig(const CoinInfo *coin, const MultisigRedeemScrip
 		out[r] = 0x50 + m; r++;
 		for (uint32_t i = 0; i < n; i++) {
 			out[r] = 33; r++; // OP_PUSH 33
-			const uint8_t *pubkey = cryptoHDNodePathToPubkey(coin, &(multisig->pubkeys[i]));
-			if (!pubkey) return 0;
-			memcpy(out + r, pubkey, 33); r += 33;
+			const HDNode *pubnode = cryptoMultisigPubkey(coin, multisig, i);
+			if (!pubnode) return 0;
+			memcpy(out + r, pubnode->public_key, 33); r += 33;
 		}
 		out[r] = 0x50 + n; r++;
 		out[r] = 0xAE; r++; // OP_CHECKMULTISIG
@@ -363,7 +364,7 @@ uint32_t compile_script_multisig_hash(const CoinInfo *coin, const MultisigRedeem
 {
 	if (!multisig->has_m) return 0;
 	const uint32_t m = multisig->m;
-	const uint32_t n = multisig->pubkeys_count;
+	const uint32_t n = cryptoMultisigPubkeyCount(multisig);
 	if (m < 1 || m > 15) return 0;
 	if (n < 1 || n > 15) return 0;
 
@@ -374,9 +375,9 @@ uint32_t compile_script_multisig_hash(const CoinInfo *coin, const MultisigRedeem
 	d[0] = 0x50 + m; hasher_Update(&hasher, d, 1);
 	for (uint32_t i = 0; i < n; i++) {
 		d[0] = 33; hasher_Update(&hasher, d, 1); // OP_PUSH 33
-		const uint8_t *pubkey = cryptoHDNodePathToPubkey(coin, &(multisig->pubkeys[i]));
-		if (!pubkey) return 0;
-		hasher_Update(&hasher, pubkey, 33);
+		const HDNode *pubnode = cryptoMultisigPubkey(coin, multisig, i);
+		if (!pubnode) return 0;
+		hasher_Update(&hasher, pubnode->public_key, 33);
 	}
 	d[0] = 0x50 + n;
 	d[1] = 0xAE;
@@ -623,7 +624,7 @@ uint32_t tx_serialize_footer(TxStruct *tx, uint8_t *out)
 		} else
 		if (tx->version == 4) {
 			memcpy(out + 4, &(tx->expiry), 4);
-			memset(out + 8, 0, 8); // valueBalance
+			memzero(out + 8, 8); // valueBalance
 			out[16] = 0x00; // nShieldedSpend
 			out[17] = 0x00; // nShieldedOutput
 			out[18] = 0x00; // nJoinSplit

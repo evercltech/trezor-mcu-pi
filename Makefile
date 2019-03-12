@@ -3,10 +3,11 @@ OBJS += startup.o
 endif
 
 OBJS += buttons.o
+OBJS += common.o
+OBJS += flash.o
 OBJS += layout.o
 OBJS += oled.o
 OBJS += rng.o
-OBJS += serialno.o
 
 ifneq ($(EMULATOR),1)
 OBJS += setup.o
@@ -18,6 +19,10 @@ OBJS += supervise.o
 
 ifneq ($(EMULATOR),1)
 OBJS += timer.o
+endif
+
+ifndef PIZERO
+OBJS += usb_standard.o
 endif
 
 OBJS += usb21_standard.o
