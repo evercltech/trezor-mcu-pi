@@ -4,7 +4,7 @@ name = "pypi"
 verify_ssl = true
 
 [packages]
-setuptools = ">=24.2.0"
+setuptools = "<=58.0.0"
 trezor = {git = "https://github.com/trezor/python-trezor", editable = true, ref = "master"}
 pytest = "*"
 mock = "*"
